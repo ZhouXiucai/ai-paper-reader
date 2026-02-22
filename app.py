@@ -1,103 +1,76 @@
 import streamlit as st
-import time
-from core_logic import extract_text_from_pdf, summarize_paper
+import os
+from core_logic import extract_text_from_pdf, create_vectorstore, ask_pdf
 
-# 1. 页面配置 (Page Config)
-st.set_page_config(
-    page_title="AI 论文速读助手",
-    page_icon="📚",
-    layout="wide"
-)
+# 页面设置
+st.set_page_config(page_title="AI Paper Chat", page_icon="📚")
+st.title("📚 AI 论文阅读助手 (RAG 版)")
 
-# 2. 侧边栏 (Sidebar) - 用于文件上传和介绍
+# 获取 API Key
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    api_key = st.text_input("请输入 OpenAI API Key", type="password")
+
+if not api_key:
+    st.info("请输入 API Key 以继续。")
+    st.stop()
+
+# --- 侧边栏：文件上传 ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3022/3022340.png", width=80)
-    st.title("📚 Paper Reader")
-    st.markdown("---")
+    st.header("1. 上传论文")
+    uploaded_file = st.file_uploader("选择 PDF 文件", type="pdf")
+    
+    # 添加一个清除按钮，用于重置
+    if st.button("清除/重置"):
+        if "vectorstore" in st.session_state:
+            del st.session_state.vectorstore
+        if "messages" in st.session_state:
+            del st.session_state.messages
+        st.rerun()
 
-    # 文件上传组件
-    uploaded_file = st.file_uploader(
-        "请上传 PDF 论文",
-        type=["pdf"],
-        help="建议上传 20 页以内的学术论文"
-    )
+# --- 初始化 Session State ---
+# 用于保存聊天记录
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    st.markdown("---")
-    st.markdown("""
-    ### 使用说明
-    1. 上传 PDF 文件
-    2. 系统自动解析文本
-    3. 点击按钮生成摘要
+# 用于保存向量库 (这是关键，避免重复计算)
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
 
-    *Powered by DeepSeek & LangChain*
-    """)
+# --- 处理文件上传与向量化 ---
+if uploaded_file and st.session_state.vectorstore is None:
+    with st.spinner("正在分析论文，构建知识库... (可能需要几秒钟)"):
+        # 1. 提取文本
+        text = extract_text_from_pdf(uploaded_file)
+        # 2. 构建向量库
+        vectorstore = create_vectorstore(text, api_key)
+        # 3. 存入 Session
+        st.session_state.vectorstore = vectorstore
+        st.success("论文分析完成！现在可以在右侧提问了。")
 
-# 3. 主界面 (Main Area)
-st.header("🤖 AI 智能论文摘要生成器")
+# --- 主界面：聊天窗口 ---
+st.subheader("2. 与论文对话")
 
-if uploaded_file is not None:
-    # --- 阶段 A: 解析 PDF ---
-    with st.status("正在解析 PDF...", expanded=True) as status:
-        st.write("正在读取二进制数据...")
-        # 调用我们在 core_logic 中写的函数
-        text_content = extract_text_from_pdf(uploaded_file)
+# 显示历史消息
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-        # 简单的校验
-        if len(text_content) < 100:
-            st.error("⚠️ 无法识别 PDF 中的文字！这可能是扫描件（图片 PDF）。请上传文字版 PDF。")
-            st.stop()  # 停止后续运行
+# 处理用户输入
+if prompt := st.chat_input("这篇论文的主要贡献是什么？"):
+    # 1. 显示用户消息
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-        st.write(f"✅ 解析成功！共提取字符数：{len(text_content)}")
-
-        # 显示前 500 个字符预览，让用户放心
-        with st.expander("点击预览提取的原始文本"):
-            st.text(text_content[:1000] + "...")
-
-        status.update(label="PDF 解析完成", state="complete", expanded=False)
-
-    # --- 阶段 B: 调用 AI ---
-    # 添加一个按钮，避免一上传就开始扣费/调用
-    if st.button("🚀 开始生成摘要", type="primary"):
-
-        # 显示进度条/加载动画
-        with st.spinner('正在请求 DeepSeek 大脑，请稍候... (通常需要 10-30 秒)'):
-            try:
-                start_time = time.time()
-
-                # 调用核心逻辑
-                summary = summarize_paper(text_content)
-
-                end_time = time.time()
-
-                # --- 阶段 C: 结果展示 ---
-                st.success(f"生成完毕！耗时 {end_time - start_time:.2f} 秒")
-                st.markdown("### 📝 论文摘要")
-                st.markdown("---")
-
-                # 将结果渲染为 Markdown
-                st.markdown(summary)
-
-                # 额外的贴心功能：下载摘要
-                st.download_button(
-                    label="💾 下载摘要为 Markdown",
-                    data=summary,
-                    file_name="summary.md",
-                    mime="text/markdown"
-                )
-
-            except Exception as e:
-                st.error(f"发生错误: {e}")
-                st.warning("请检查你的 API Key 是否正确，或网络是否通畅。")
-
-else:
-    # 引导页面 (当没有上传文件时显示)
-    st.info("👈 请先在左侧侧边栏上传一个 PDF 文件。")
-
-    # 放一些装饰性的内容
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(label="支持格式", value="PDF")
-    with col2:
-        st.metric(label="模型驱动", value="DeepSeek-V3")
-    with col3:
-        st.metric(label="开发耗时", value="< 1 Hour")
+    # 2. 生成回答
+    if st.session_state.vectorstore:
+        with st.chat_message("assistant"):
+            with st.spinner("AI 正在思考..."):
+                response = ask_pdf(st.session_state.vectorstore, prompt, api_key)
+                st.markdown(response)
+        
+        # 3. 保存 AI 回复
+        st.session_state.messages.append({"role": "assistant", "content": response})
+    else:
+        st.error("请先上传 PDF 文件！")
