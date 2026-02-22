@@ -1,7 +1,9 @@
 import os
 import streamlit as st # 新增：引入 streamlit 用于读取云端密钥
 from PyPDF2 import PdfReader
-from langchain.text_splitter import CharacterTextSplitter
+#from langchain.text_splitter import CharacterTextSplitter
+# 改用新的专用包引入
+from langchain_text_splitters import CharacterTextSplitter
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
@@ -85,3 +87,4 @@ def summarize_paper(pdf_text):
     # 4. 执行
     result = chain.run(input_text)
     return result
+
