@@ -1,94 +1,87 @@
 import os
-from dotenv import load_dotenv
+import streamlit as st # 新增：引入 streamlit 用于读取云端密钥
 from PyPDF2 import PdfReader
+from langchain.text_splitter import CharacterTextSplitter
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from dotenv import load_dotenv
 
-# 1. 加载环境变量 (读取 .env)
+# 加载本地 .env (本地运行时有效)
 load_dotenv()
 
+# --- 关键修改：创建一个获取密钥的函数 ---
+def get_env_variable(var_name):
+    """
+    优先从 Streamlit Secrets 读取 (云端)，
+    如果找不到，再从环境变量/本地 .env 读取。
+    """
+    if var_name in st.secrets:
+        return st.secrets[var_name]
+    return os.getenv(var_name)
+
 # 获取配置
-api_key = os.getenv("DEEPSEEK_API_KEY")
-base_url = os.getenv("DEEPSEEK_BASE_URL")
-model_name = os.getenv("DEEPSEEK_MODEL")
+api_key = get_env_variable("DEEPSEEK_API_KEY")
+base_url = get_env_variable("DEEPSEEK_BASE_URL")
 
+# 初始化 LLM
+# 注意：必须确保 api_key 不是 None，否则 ChatOpenAI 会报错
 if not api_key:
-    raise ValueError("请在 .env 文件中配置 DEEPSEEK_API_KEY")
+    # 这里只是为了防止立即崩溃，实际运行时如果没有 key 会在后续调用报错
+    # 但至少可以让 import 过程通过
+    api_key = "missing_key" 
 
-# 2. 初始化大模型
-# DeepSeek 兼容 OpenAI 格式，所以直接用 ChatOpenAI 类
 llm = ChatOpenAI(
-    model=model_name,
-    api_key=api_key,
-    base_url=base_url,
-    temperature=0.3, # 温度低一点，让回答更严谨
+    model="deepseek-chat",
+    openai_api_key=api_key,       # 显式传入获取到的 Key
+    openai_api_base=base_url,     # 显式传入 Base URL
+    temperature=0.3,
 )
 
-def extract_text_from_pdf(uploaded_file):
+def extract_text_from_pdf(pdf_file):
+    """从 PDF 文件对象中提取文本"""
+    pdf_reader = PdfReader(pdf_file)
+    text = ""
+    for page in pdf_reader.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text
+    return text
+
+def summarize_paper(pdf_text):
+    """使用 LLM 总结论文内容"""
+    
+    # 1. 文本分块 (防止超过 Token 限制)
+    text_splitter = CharacterTextSplitter(
+        separator="\n",
+        chunk_size=2000, 
+        chunk_overlap=200
+    )
+    texts = text_splitter.split_text(pdf_text)
+    
+    # 简单起见，我们MVP版本只取前 2 个块进行总结（省钱 + 快速）
+    # 真实场景可以使用 Map-Reduce 或 Refine 模式处理全文
+    input_text = " ".join(texts[:2]) 
+
+    # 2. 定义 Prompt
+    template = """
+    你是一位专业的学术论文助手。请阅读以下论文片段，并用中文输出一份结构化的总结。
+    
+    论文片段：
+    {text}
+    
+    请按照以下格式输出：
+    1. **论文标题/核心主题**：(一句话概括)
+    2. **主要解决的问题**：(痛点是什么)
+    3. **核心方法/技术**：(用了什么方案)
+    4. **关键结论**：(实验结果或最终发现)
     """
-    从 Streamlit 上传的文件对象中提取文本
-    """
-    try:
-        pdf_reader = PdfReader(uploaded_file)
-        text = ""
-        # 遍历每一页提取文本
-        for page in pdf_reader.pages:
-            content = page.extract_text()
-            if content:
-                text += content + "\n"
-        return text
-    except Exception as e:
-        return f"Error reading PDF: {e}"
-
-def summarize_paper(text_content):
-    """
-    将文本发送给 DeepSeek 进行总结
-    """
-    # 定义提示词模板 (Prompt Engineering)
-    # 这里的技巧是：明确角色，明确输出格式，明确语言
-    system_template = """
-    你是一位专业的学术研究助手。你的任务是帮助用户快速理解论文的核心内容。
-    请阅读用户提供的论文文本，并按照以下 Markdown 格式生成一份中文摘要：
-
-    ## 📄 论文标题与核心贡献
-    （用一句话概括这篇论文解决了什么问题）
-
-    ## 💡 关键创新点
-    - （列出3-5个关键点，使用列表形式）
-
-    ## 🧪 方法与结论
-    （简要描述使用了什么方法，得到了什么结论）
-
-    ---
-    注意：请忽略参考文献部分，只关注正文。直接输出结果，不要废话。
-    """
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_template),
-        ("user", "{text}")
-    ])
-
-    # 构建处理链：Prompt -> LLM -> StringParser
-    chain = prompt | llm | StrOutputParser()
-
-    # 调用模型
-    # 既然是 MVP，我们先直接把全文塞进去 (DeepSeek 支持长文本)
-    # 如果文本超长，这里可能会报错，但对于一般论文(10-20页)没问题
-    try:
-        result = chain.invoke({"text": text_content})
-        return result
-    except Exception as e:
-        return f"AI 处理出错: {e}"
-
-# --- 本地测试代码 (开发阶段调试用) ---
-if __name__ == "__main__":
-    # 你可以在这里写死一个本地 PDF 路径来测试逻辑是否通顺
-    # 临时测试代码
-    #  with open("基于机器学习的气体传感器设计与优化_张钰.pdf", "rb") as f:
-    #      text = extract_text_from_pdf(f)
-    #      print(f"提取字符数: {len(text)}")
-    #      print("正在发送给 AI...")
-    #      res = summarize_paper(text[:5000]) # 先只测前5000字省钱省时间
-    #      print(res)
-    print("Core logic loaded successfully. Waiting for app.py to call.")
+    
+    prompt = PromptTemplate(template=template, input_variables=["text"])
+    
+    # 3. 创建 Chain
+    chain = LLMChain(llm=llm, prompt=prompt)
+    
+    # 4. 执行
+    result = chain.run(input_text)
+    return result
