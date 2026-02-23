@@ -25,10 +25,9 @@ def extract_text_from_pdf(pdf_file):
 def create_vectorstore(text, openai_api_key, base_url=None):
     """
     创建向量库
-    增加了 base_url 参数，用于支持中转 Key
     """
     if not text:
-        return None
+        return "PDF 内容为空，无法分析。"
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -37,20 +36,20 @@ def create_vectorstore(text, openai_api_key, base_url=None):
     )
     chunks = text_splitter.split_text(text)
 
-    # 关键修改：如果有 base_url，就传进去；否则默认为 None (官方地址)
-    # 注意：某些版本的 LangChain 使用 openai_api_base，新版使用 base_url，这里做个兼容处理
+    # 显式指定模型，增加兼容性
+    # 很多中转站只支持 text-embedding-ada-002，不支持新的 text-embedding-3-small
     embeddings = OpenAIEmbeddings(
         openai_api_key=openai_api_key,
-        base_url=base_url 
+        base_url=base_url,
+        model="text-embedding-ada-002" 
     )
 
     try:
         vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
-        return vectorstore
+        return vectorstore # 成功返回对象
     except Exception as e:
-        # 这里捕获 embedding 时的错误，通常是 Key 或网络问题
-        print(f"Embedding Error: {e}")
-        return None
+        # 失败返回错误字符串
+        return f"Embedding Error: {str(e)}"
 
 def ask_pdf(vectorstore, question, openai_api_key, base_url=None):
     """
@@ -59,7 +58,6 @@ def ask_pdf(vectorstore, question, openai_api_key, base_url=None):
     if not vectorstore:
         return "请先上传文件并等待分析完成。"
 
-    # 关键修改：传入 base_url
     llm = ChatOpenAI(
         temperature=0.3,
         openai_api_key=openai_api_key,
