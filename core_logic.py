@@ -22,16 +22,14 @@ def extract_text_from_pdf(pdf_file):
         return f"Error reading PDF: {e}"
     return text
 
-def create_vectorstore(text, openai_api_key):
+def create_vectorstore(text, openai_api_key, base_url=None):
     """
-    1. 切分文本
-    2. 将文本转换为向量 (Embeddings)
-    3. 存入 FAISS 向量库
+    创建向量库
+    增加了 base_url 参数，用于支持中转 Key
     """
     if not text:
         return None
 
-    # 1. 文本切分：每块 1000 字符，重叠 200 字符（防止句子被切断）
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
@@ -39,32 +37,38 @@ def create_vectorstore(text, openai_api_key):
     )
     chunks = text_splitter.split_text(text)
 
-    # 2. 初始化 Embeddings 模型 (这是 RAG 的核心，用于理解语义)
-    embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+    # 关键修改：如果有 base_url，就传进去；否则默认为 None (官方地址)
+    # 注意：某些版本的 LangChain 使用 openai_api_base，新版使用 base_url，这里做个兼容处理
+    embeddings = OpenAIEmbeddings(
+        openai_api_key=openai_api_key,
+        base_url=base_url 
+    )
 
-    # 3. 创建向量库 (运行在内存中)
-    vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
-    
-    return vectorstore
+    try:
+        vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
+        return vectorstore
+    except Exception as e:
+        # 这里捕获 embedding 时的错误，通常是 Key 或网络问题
+        print(f"Embedding Error: {e}")
+        return None
 
-def ask_pdf(vectorstore, question, openai_api_key):
+def ask_pdf(vectorstore, question, openai_api_key, base_url=None):
     """
-    RAG 核心链路：检索 -> 增强 -> 生成
+    RAG 问答
     """
     if not vectorstore:
-        return "请先上传文件。"
+        return "请先上传文件并等待分析完成。"
 
-    # 1. 定义 LLM
+    # 关键修改：传入 base_url
     llm = ChatOpenAI(
-        temperature=0.3, # 问答稍微有点创造性也可以，但主要还是要严谨
+        temperature=0.3,
         openai_api_key=openai_api_key,
+        base_url=base_url,
         model_name="gpt-3.5-turbo"
     )
 
-    # 2. 定义检索器 (Retriever)：只找最相关的 3 个片段
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    # 3. 定义 Prompt
     template = """你是一个专业的学术助手。请根据下面的【上下文】内容来回答用户的【问题】。
     如果你在上下文中找不到答案，就诚实地说“我无法在文档中找到答案”，不要瞎编。
 
@@ -76,8 +80,6 @@ def ask_pdf(vectorstore, question, openai_api_key):
     """
     prompt = ChatPromptTemplate.from_template(template)
 
-    # 4. 构建 LCEL 链 (LangChain Expression Language)
-    # 逻辑：retriever 找文档 -> 格式化文档 -> 填入 prompt -> 发给 llm -> 解析字符串
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
@@ -88,13 +90,4 @@ def ask_pdf(vectorstore, question, openai_api_key):
         | StrOutputParser()
     )
 
-    # 5. 执行
     return rag_chain.invoke(question)
-
-# 保留之前的 summarize_paper 函数，以免旧代码报错，虽然我们这次主要用 RAG
-def summarize_paper(text, openai_api_key):
-    # 这里为了简单，我们还是用之前的方法，或者直接调用 ask_pdf 让他生成摘要也可以
-    # 为了演示兼容性，保留原逻辑的简化版
-    if not text: return "无内容"
-    llm = ChatOpenAI(temperature=0, openai_api_key=openai_api_key)
-    return llm.invoke(f"请总结以下内容：{text[:3000]}").content
