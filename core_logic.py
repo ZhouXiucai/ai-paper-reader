@@ -2,7 +2,9 @@ import os
 from PyPDF2 import PdfReader
 
 # --- LangChain 核心组件 ---
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
+# 🔴 修改点 1: 引入 HuggingFace 本地 Embedding
+from langchain_huggingface import HuggingFaceEmbeddings 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
@@ -22,42 +24,41 @@ def extract_text_from_pdf(pdf_file):
         return f"Error reading PDF: {e}"
     return text
 
-def create_vectorstore(text, openai_api_key, base_url=None):
+def create_vectorstore(text, openai_api_key=None, base_url=None):
     """
-    创建向量库
+    创建向量库 (使用本地免费模型)
     """
     if not text:
         return "PDF 内容为空，无法分析。"
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
+        chunk_size=500,  # 本地模型上下文较小，切片切小一点
+        chunk_overlap=50,
         length_function=len
     )
     chunks = text_splitter.split_text(text)
 
-    # 显式指定模型，增加兼容性
-    # 很多中转站只支持 text-embedding-ada-002，不支持新的 text-embedding-3-small
-    embeddings = OpenAIEmbeddings(
-        openai_api_key=openai_api_key,
-        base_url=base_url,
-        model="text-embedding-ada-002" 
-    )
-
+    # 🔴 修改点 2: 使用本地 HuggingFace 模型
+    # 这样就不需要 API Key 了，也不用担心 Base URL 配置错误
+    # 模型会自动下载到本地，第一次运行比较慢，请耐心等待
     try:
+        print("正在加载本地 Embedding 模型...")
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        
+        print("正在向量化...")
         vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings)
-        return vectorstore # 成功返回对象
+        return vectorstore
     except Exception as e:
-        # 失败返回错误字符串
-        return f"Embedding Error: {str(e)}"
+        return f"Local Embedding Error: {str(e)}"
 
 def ask_pdf(vectorstore, question, openai_api_key, base_url=None):
     """
-    RAG 问答
+    RAG 问答 (这一步仍然需要 API Key 来生成回答)
     """
     if not vectorstore:
         return "请先上传文件并等待分析完成。"
 
+    # 这里仍然使用你的 Key 进行对话
     llm = ChatOpenAI(
         temperature=0.3,
         openai_api_key=openai_api_key,
@@ -68,8 +69,7 @@ def ask_pdf(vectorstore, question, openai_api_key, base_url=None):
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
     template = """你是一个专业的学术助手。请根据下面的【上下文】内容来回答用户的【问题】。
-    如果你在上下文中找不到答案，就诚实地说“我无法在文档中找到答案”，不要瞎编。
-
+    
     【上下文】：
     {context}
 
