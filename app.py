@@ -9,17 +9,13 @@ st.title("📚 AI 论文阅读助手 (RAG 版)")
 with st.sidebar:
     st.header("1. 配置")
     
-    # 1. API Key
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         api_key = st.text_input("OpenAI API Key", type="password")
 
-    # 2. Base URL (新增：为了解决 AuthenticationError)
-    # 如果你是官方 Key，留空即可
-    # 如果你是中转 Key，通常填 https://api.xxx.com/v1
     base_url = st.text_input("Base URL (可选, 中转/代理必填)", placeholder="例如: https://api.openai-proxy.com/v1")
     if not base_url:
-        base_url = None # 确保传给后端的是 None 而不是空字符串
+        base_url = None
 
     st.divider()
     
@@ -33,12 +29,10 @@ with st.sidebar:
             del st.session_state.messages
         st.rerun()
 
-# 检查 Key
 if not api_key:
     st.info("👈 请在左侧输入 API Key 以继续。")
     st.stop()
 
-# --- 初始化 Session ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "vectorstore" not in st.session_state:
@@ -46,16 +40,23 @@ if "vectorstore" not in st.session_state:
 
 # --- 处理文件 ---
 if uploaded_file and st.session_state.vectorstore is None:
-    with st.spinner("正在分析论文，构建知识库... (如果报错，请检查 Base URL)"):
+    with st.spinner("正在分析论文，构建知识库..."):
         text = extract_text_from_pdf(uploaded_file)
-        # 传入 base_url
-        vectorstore = create_vectorstore(text, api_key, base_url)
         
-        if vectorstore:
-            st.session_state.vectorstore = vectorstore
-            st.success("论文分析完成！")
+        # 调用核心逻辑
+        result = create_vectorstore(text, api_key, base_url)
+        
+        # 判断结果类型
+        if isinstance(result, str) and result.startswith("Embedding Error"):
+            st.error("🔴 分析失败，详细错误如下：")
+            st.code(result, language="text")
+            st.warning("👉 请截图此错误发给 AI 架构师，或检查你的 Base URL 是否正确。")
+        elif isinstance(result, str):
+            st.error(result) # 其他文本错误
         else:
-            st.error("分析失败！可能是 API Key 无效或 Base URL 填写错误。请检查后重试。")
+            # 成功返回了对象
+            st.session_state.vectorstore = result
+            st.success("✅ 论文分析完成！")
 
 # --- 聊天界面 ---
 st.subheader("3. 与论文对话")
@@ -72,10 +73,11 @@ if prompt := st.chat_input("这篇论文的主要贡献是什么？"):
     if st.session_state.vectorstore:
         with st.chat_message("assistant"):
             with st.spinner("AI 正在思考..."):
-                # 传入 base_url
-                response = ask_pdf(st.session_state.vectorstore, prompt, api_key, base_url)
-                st.markdown(response)
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
+                try:
+                    response = ask_pdf(st.session_state.vectorstore, prompt, api_key, base_url)
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                except Exception as e:
+                    st.error(f"生成回答时出错: {e}")
     else:
         st.error("请先上传 PDF 文件，并确保分析成功！")
